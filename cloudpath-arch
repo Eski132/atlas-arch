@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROGRAM='cloudpath-arch'
+RUNTIME_HELPER='/usr/lib/cloudpath-arch/cloudpath-arch-ns'
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  cloudpath-arch /path/to/Cloudpath-x64.tar.bz2
+  cloudpath-arch --check /path/to/Cloudpath-x64.tar.bz2
+
+Runs a user's own Cloudpath Linux installer on Arch Linux without modifying
+Arch's distro identification files. The Cloudpath archive is unpacked into a
+private temporary directory and removed when the program exits.
+USAGE
+}
+
+die() {
+  printf '%s: %s\n' "$PROGRAM" "$*" >&2
+  exit 1
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+check_archive_paths() {
+  local archive=$1 entry
+  while IFS= read -r entry; do
+    case "$entry" in
+      /*|../*|*/../*|*/..)
+        die "archive contains an unsafe path: $entry"
+        ;;
+    esac
+  done < <(tar -tjf "$archive")
+}
+
+find_payload_root() {
+  local dir=$1 candidate
+  if [[ -x "$dir/Cloudpath-x64" && -f "$dir/network_config.xml" && -f "$dir/session.properties" ]]; then
+    printf '%s\n' "$dir"
+    return 0
+  fi
+
+  candidate=$(find "$dir" -mindepth 1 -maxdepth 3 -type f -name Cloudpath-x64 -print -quit)
+  [[ -n "$candidate" ]] || return 1
+  candidate=${candidate%/Cloudpath-x64}
+  [[ -f "$candidate/network_config.xml" && -f "$candidate/session.properties" ]] || return 1
+  printf '%s\n' "$candidate"
+}
+
+show_check() {
+  local root=$1
+  local network='unknown' licensee='unknown'
+  network=$(sed -n 's:.*<name>\([^<]*\)</name>.*:\1:p' "$root/network_config.xml" | head -n1 || true)
+  licensee=$(sed -n 's:.*<licensee>\([^<]*\)</licensee>.*:\1:p' "$root/network_config.xml" | head -n1 || true)
+
+  printf 'Archive looks usable.\n'
+  printf '  Network: %s\n' "$network"
+  printf '  Licensee: %s\n' "$licensee"
+  printf '  Executable: %s\n' "$(file -b "$root/Cloudpath-x64")"
+
+  if grep -q '^authorizationToken=' "$root/session.properties"; then
+    printf '  Enrollment token: present (value intentionally not displayed)\n'
+  else
+    printf '  Enrollment token: not found\n'
+  fi
+
+  if grep -q '^enrollmentGuid=' "$root/session.properties"; then
+    printf '  Enrollment GUID: present (value intentionally not displayed)\n'
+  else
+    printf '  Enrollment GUID: not found\n'
+  fi
+}
+
+main() {
+  local check_only=0 archive tmp payload_root runtime_base
+
+  if [[ ${1:-} == '--check' ]]; then
+    check_only=1
+    shift
+  fi
+
+  [[ $# -eq 1 ]] || { usage >&2; exit 2; }
+  archive=$1
+
+  [[ -f "$archive" ]] || die "archive not found: $archive"
+  [[ -r "$archive" ]] || die "archive is not readable: $archive"
+  [[ $(uname -m) == 'x86_64' ]] || die 'this wrapper currently supports x86_64 Cloudpath installers only'
+  [[ -e /etc/arch-release ]] || die 'this package is intended for Arch Linux and Arch-based systems'
+
+  need tar
+  need find
+  need sed
+  need grep
+  need file
+
+  check_archive_paths "$archive"
+
+  umask 077
+  runtime_base=${XDG_RUNTIME_DIR:-/tmp}
+  if [[ ! -d "$runtime_base" || ! -w "$runtime_base" ]]; then
+    runtime_base=/tmp
+  fi
+  tmp=$(mktemp -d "$runtime_base/cloudpath-arch.XXXXXXXX")
+  trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
+
+  mkdir -p "$tmp/payload" "$tmp/fake-release"
+  tar -xjf "$archive" -C "$tmp/payload" --no-same-owner --no-same-permissions
+
+  payload_root=$(find_payload_root "$tmp/payload") || die 'archive does not contain the expected Cloudpath-x64 payload'
+  chmod u+x "$payload_root/Cloudpath-x64"
+
+  if (( check_only )); then
+    show_check "$payload_root"
+    exit 0
+  fi
+
+  [[ -x "$RUNTIME_HELPER" ]] || die "runtime helper missing: $RUNTIME_HELPER"
+  need sudo
+  need systemctl
+
+  systemctl -q is-active NetworkManager.service || die 'NetworkManager is not running (enable/start NetworkManager first)'
+
+  # Cloudpath's Linux profile in current deployments is commonly gated to
+  # Ubuntu/Fedora even though the actual configuration uses NetworkManager.
+  # These files exist only inside the temporary mount namespace created by
+  # cloudpath-arch-ns; the host files are never edited.
+  cat > "$tmp/fake-release/lsb-release" <<'RELEASE'
+DISTRIB_ID=Ubuntu
+DISTRIB_RELEASE=22.04
+DISTRIB_CODENAME=jammy
+DISTRIB_DESCRIPTION="Ubuntu 22.04 LTS"
+RELEASE
+
+  cat > "$tmp/fake-release/os-release" <<'RELEASE'
+NAME="Ubuntu"
+VERSION="22.04 LTS (Jammy Jellyfish)"
+ID=ubuntu
+ID_LIKE=debian
+PRETTY_NAME="Ubuntu 22.04 LTS"
+VERSION_ID="22.04"
+VERSION_CODENAME=jammy
+UBUNTU_CODENAME=jammy
+RELEASE
+
+  printf 'Starting Cloudpath with temporary Ubuntu compatibility metadata.\n'
+  printf 'Your enrollment archive stays in a private temporary directory and is deleted on exit.\n'
+
+  sudo \
+    env \
+      "HOME=$HOME" \
+      "USER=${USER:-$(id -un)}" \
+      "LOGNAME=${LOGNAME:-${USER:-$(id -un)}}" \
+      "PATH=$PATH" \
+      "DISPLAY=${DISPLAY:-}" \
+      "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}" \
+      "XAUTHORITY=${XAUTHORITY:-}" \
+      "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-}" \
+      "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}" \
+      "$RUNTIME_HELPER" "$(id -u)" "$(id -g)" "$payload_root" "$tmp/fake-release"
+}
+
+main "$@"

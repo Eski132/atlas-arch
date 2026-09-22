@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ ${EUID:-$(id -u)} -eq 0 ]] || { printf 'cloudpath-arch-ns: must run as root\n' >&2; exit 1; }
+[[ $# -eq 4 ]] || { printf 'cloudpath-arch-ns: invalid arguments\n' >&2; exit 2; }
+
+uid=$1
+gid=$2
+payload_root=$3
+fake_release=$4
+
+[[ "$uid" =~ ^[0-9]+$ && "$gid" =~ ^[0-9]+$ ]] || { printf 'cloudpath-arch-ns: invalid uid/gid\n' >&2; exit 2; }
+[[ -x "$payload_root/Cloudpath-x64" ]] || { printf 'cloudpath-arch-ns: Cloudpath executable missing\n' >&2; exit 1; }
+[[ -f "$fake_release/lsb-release" && -f "$fake_release/os-release" ]] || { printf 'cloudpath-arch-ns: compatibility metadata missing\n' >&2; exit 1; }
+[[ -e /etc/lsb-release ]] || { printf 'cloudpath-arch-ns: /etc/lsb-release missing; install the Arch lsb-release package\n' >&2; exit 1; }
+[[ -e /usr/lib/os-release ]] || { printf 'cloudpath-arch-ns: /usr/lib/os-release missing\n' >&2; exit 1; }
+
+# We only isolate mount topology. Network, D-Bus and the host filesystem remain
+# available because Cloudpath must talk to the real NetworkManager and may ask
+# for privilege through the normal desktop/sudo mechanisms.
+unshare --mount --fork --propagation private -- \
+  /usr/lib/cloudpath-arch/cloudpath-arch-mount-run \
+  "$uid" "$gid" "$payload_root" "$fake_release"

@@ -1,0 +1,18 @@
+# Never publish Cloudpath enrollment bundles/session material
+Cloudpath*
+*.tar.bz2
+session.properties
+network_config.xml
+resources.properties
+
+# Client credentials/certificates
+*.key
+*.pem
+*.p12
+*.pfx
+*.csr
+
+# Arch build output
+pkg/
+src/
+*.pkg.tar.*

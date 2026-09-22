@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+uid=$1
+gid=$2
+payload_root=$3
+fake_release=$4
+
+mount --bind "$fake_release/lsb-release" /etc/lsb-release
+mount -o remount,bind,ro /etc/lsb-release
+
+mount --bind "$fake_release/os-release" /usr/lib/os-release
+mount -o remount,bind,ro /usr/lib/os-release
+
+# /etc/os-release is normally a symlink to /usr/lib/os-release on Arch. If it
+# is a separate regular file on an Arch derivative, mask that file too.
+if [[ -e /etc/os-release && ! -L /etc/os-release ]]; then
+  mount --bind "$fake_release/os-release" /etc/os-release
+  mount -o remount,bind,ro /etc/os-release
+fi
+
+cd "$payload_root"
+
+# Drop back to the invoking desktop user before launching Cloudpath. setuid
+# helpers (sudo/pkexec) continue to work normally because this is only a mount
+# namespace, not a user namespace.
+exec setpriv \
+  --reuid="$uid" \
+  --regid="$gid" \
+  --init-groups \
+  --reset-env \
+  env \
+    "HOME=${HOME:-/tmp}" \
+    "USER=${USER:-}" \
+    "LOGNAME=${LOGNAME:-}" \
+    "PATH=${PATH:-/usr/local/sbin:/usr/local/bin:/usr/bin}" \
+    "DISPLAY=${DISPLAY:-}" \
+    "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}" \
+    "XAUTHORITY=${XAUTHORITY:-}" \
+    "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-}" \
+    "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}" \
+    ./Cloudpath-x64
