@@ -2,7 +2,7 @@
 
 An Arch Linux compatibility wrapper for the Ruckus Cloudpath Wi-Fi installer.
 
-Originally created for **Copernicus School (Atlas College)** to connect Arch Linux devices to the school's secured Wi-Fi network.
+Originally created for **Copernicus SG (Atlas College)** to connect Arch Linux devices to the school's secured Wi-Fi network.
 
 It may also work with other schools and organizations using Cloudpath.
 
