@@ -1,80 +1,57 @@
-# cloudpath-arch-wrapper
+# atlas-arch
 
-A small Arch Linux compatibility wrapper for **user-provided** Ruckus/Cloudpath XpressConnect Linux installers.
+An Arch Linux compatibility wrapper for the Ruckus Cloudpath Wi-Fi installer.
 
-It does **not** redistribute Cloudpath, a school/company configuration, enrollment tokens, certificates, usernames, or any other enrollment material.
+Originally created for **Copernicus School (Atlas College)** to connect Arch Linux devices to the school's secured Wi-Fi network.
 
-## Why this exists
+It may also work with other schools and organizations using Cloudpath.
 
-Some Cloudpath deployments ship a Linux executable whose network configuration is implemented through NetworkManager, but whose profile selection only allows Ubuntu/Fedora. On Arch this can result in an "operating system not supported" message.
+> [!NOTE]
+> This project was made with the help of AI. It is not officially affiliated with Atlas College, Copernicus or Ruckus.
 
-This wrapper runs the user's own downloaded Cloudpath archive while presenting Ubuntu 22.04 distro metadata **inside a temporary mount namespace**. It does not rewrite `/etc/os-release`, `/usr/lib/os-release`, or `/etc/lsb-release` on the host.
+## Installation
 
-## One-command install + run
+1. Download your own `Cloudpath-x64.tar.bz2` installer from your school or organization.
 
-After downloading your own Cloudpath archive from your organization, run:
+2. Run this command:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Eski132/atlas-arch/main/install.sh) ~/Downloads/Cloudpath-x64.tar.bz2
 ```
 
-Replace `YOUR_USERNAME` with the GitHub account that publishes this repository. The installer contains no Cloudpath enrollment data; the `.tar.bz2` stays local to the machine running it.
+3. Follow the Cloudpath installer instructions.
 
-## Install from a clone
+That's it!
 
-```bash
-makepkg -si
-```
+## How It Works
 
-## Use
+Cloudpath doesn't officially support Arch Linux.
 
-Download a fresh Linux x64 Cloudpath installer from your organization's onboarding portal, then run:
+This wrapper temporarily makes Cloudpath detect Ubuntu 22.04 without modifying your actual operating system.
 
-```bash
-cloudpath-arch ~/Downloads/Cloudpath-x64.tar.bz2
-```
-
-To validate an archive without launching Cloudpath:
-
-```bash
-cloudpath-arch --check ~/Downloads/Cloudpath-x64.tar.bz2
-```
-
-## Privacy / publishing
-
-Cloudpath archives can contain short-lived or account/session-specific enrollment material such as:
-
-- `authorizationToken`
-- `enrollmentGuid`
-- organization-specific certificate authorities and URLs
-
-Do not commit a downloaded `Cloudpath-*.tar.bz2`, extracted `session.properties`, or generated client certificates to a public repository.
-
-The wrapper extracts a user's archive into a mode-0700 temporary directory and removes it when the wrapper exits normally or receives HUP/INT/TERM. The token is never printed by `--check`.
-
-## How it works
-
-1. Validates that the supplied archive has safe relative paths.
-2. Extracts it to a private temporary directory.
-3. Confirms the expected Cloudpath executable/config files exist.
-4. Starts a root-created **mount namespace only** using `unshare`.
-5. Bind-mounts temporary Ubuntu 22.04 `lsb-release`/`os-release` files over the distro-identification files inside that namespace.
-6. Drops back to the invoking user and launches `Cloudpath-x64`.
-7. Cloudpath still talks to the real host NetworkManager/D-Bus and can use the normal privilege mechanisms when required.
-8. The temporary payload is removed after Cloudpath exits.
-
-No Cloudpath configuration file is modified, which avoids breaking vendor configuration integrity/checksum mechanisms.
+It installs the required dependencies and runs your own Cloudpath installer.
 
 ## Requirements
 
-The PKGBUILD installs/declares the Arch packages used by the wrapper and by older Cloudpath Linux clients, including NetworkManager, `lsb-release`, `lshw`, and the legacy `wireless_tools` utilities.
+- Arch Linux (x86_64)
+- NetworkManager
+- Internet connection
+- Your own Cloudpath installer
 
-NetworkManager must be running.
+## Privacy
 
-## Scope
+This repository does not contain or distribute personal certificates, school credentials or enrollment tokens.
 
-This is a compatibility wrapper, not a reimplementation of Cloudpath's enrollment protocol. Each user must obtain their own legitimate installer/enrollment session from the organization that operates the network.
+Every user must download their own Cloudpath installer.
+
+Never upload your certificates or enrollment files to GitHub.
+
+## Disclaimer
+
+This project is experimental and has not undergone a security audit. Successful Wi-Fi enrollment is not guaranteed.
+
+Created with AI assistance.
 
 ## License
 
-The wrapper code in this repository is MIT licensed. Ruckus/Cloudpath itself is not included and is governed by its own terms.
+MIT License.
