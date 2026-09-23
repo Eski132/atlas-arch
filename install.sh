@@ -155,6 +155,6 @@ sudo systemctl enable --now NetworkManager.service
 
 printf 'cloudpath-arch installed.\n'
 if [[ $# -gt 0 ]]; then
-  exec cloudpath-arch "$@"
+  cloudpath-arch "$@"
 fi
 printf 'Run: cloudpath-arch ~/Downloads/Cloudpath-x64.tar.bz2\n'

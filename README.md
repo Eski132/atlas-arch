@@ -15,7 +15,7 @@ This wrapper runs the user's own downloaded Cloudpath archive while presenting U
 After downloading your own Cloudpath archive from your organization, run:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/cloudpath-arch-wrapper/main/install.sh) ~/Downloads/Cloudpath-x64.tar.bz2
+bash <(curl -fsSL https://raw.githubusercontent.com/Eski132/atlas-arch/main/install.sh) ~/Downloads/Cloudpath-x64.tar.bz2
 ```
 
 Replace `YOUR_USERNAME` with the GitHub account that publishes this repository. The installer contains no Cloudpath enrollment data; the `.tar.bz2` stays local to the machine running it.

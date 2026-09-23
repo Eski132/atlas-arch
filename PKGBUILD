@@ -3,7 +3,7 @@ pkgver=0.1.0
 pkgrel=1
 pkgdesc='Run user-provided Cloudpath XpressConnect Linux installers on Arch Linux'
 arch=('x86_64')
-url='https://github.com/YOUR_USERNAME/cloudpath-arch-wrapper'
+url='https://github.com/Eski132/atlas-arch'
 license=('MIT')
 depends=(
   'bash'
