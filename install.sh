@@ -229,6 +229,13 @@ LSB_RELEASE
       "XAUTHORITY=${XAUTHORITY:-}" \
       "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-}" \
       "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}" \
+      "XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-}" \
+      "XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-}" \
+      "XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-}" \
+      "XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-}" \
+      "XDG_DATA_HOME=${XDG_DATA_HOME:-}" \
+      "XDG_DATA_DIRS=${XDG_DATA_DIRS:-}" \
+      "LANG=${LANG:-}" "LC_ALL=${LC_ALL:-}" "LC_CTYPE=${LC_CTYPE:-}" "SHELL=${SHELL:-}" \
       "$RUNTIME_HELPER" "$(id -u)" "$(id -g)" "$payload_root" "$tmp/fake-release" "$tmp/fake-bin"
   then
     return 0
@@ -277,7 +284,11 @@ cd "$payload_root"
 exec setpriv --reuid="$uid" --regid="$gid" --init-groups --reset-env env \
   "HOME=${HOME:-/tmp}" "USER=${USER:-}" "LOGNAME=${LOGNAME:-}" "PATH=$fake_bin:${PATH:-/usr/local/sbin:/usr/local/bin:/usr/bin}" \
   "DISPLAY=${DISPLAY:-}" "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}" "XAUTHORITY=${XAUTHORITY:-}" \
-  "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-}" "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}" ./Cloudpath-x64
+  "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-}" "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}" \
+  "XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-}" "XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-}" \
+  "XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-}" "XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-}" \
+  "XDG_DATA_HOME=${XDG_DATA_HOME:-}" "XDG_DATA_DIRS=${XDG_DATA_DIRS:-}" \
+  "LANG=${LANG:-}" "LC_ALL=${LC_ALL:-}" "LC_CTYPE=${LC_CTYPE:-}" "SHELL=${SHELL:-}" ./Cloudpath-x64
 SCRIPT
 
 printf 'Installing dependencies...\n'
