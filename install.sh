@@ -125,7 +125,7 @@ main() {
   tmp=$(mktemp -d "$runtime_base/cloudpath-arch.XXXXXXXX")
   trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 
-  mkdir -p "$tmp/payload" "$tmp/fake-release"
+  mkdir -p "$tmp/payload" "$tmp/fake-release" "$tmp/fake-bin"
   tar -xjf "$archive" -C "$tmp/payload" --no-same-owner --no-same-permissions
 
   payload_root=$(find_payload_root "$tmp/payload") || die 'archive does not contain the expected Cloudpath-x64 payload'
@@ -164,6 +164,56 @@ VERSION_CODENAME=jammy
 UBUNTU_CODENAME=jammy
 RELEASE
 
+  # Cloudpath may invoke lsb_release instead of reading the release files.
+  # Place a deterministic Ubuntu shim first in the child-only PATH.
+  cat > "$tmp/fake-bin/lsb_release" <<'LSB_RELEASE'
+#!/usr/bin/env bash
+set -eu
+
+silent=0
+fields=()
+for arg in "$@"; do
+  case "$arg" in
+    -s|--short) silent=1 ;;
+    -a|--all) fields=(i d r c) ;;
+    -i|--id) fields+=(i) ;;
+    -d|--description) fields+=(d) ;;
+    -r|--release) fields+=(r) ;;
+    -c|--codename) fields+=(c) ;;
+    -[sidrc]*)
+      flags=${arg#-}
+      while [[ -n "$flags" ]]; do
+        flag=${flags:0:1}
+        flags=${flags:1}
+        case "$flag" in
+          s) silent=1 ;;
+          i|d|r|c) fields+=("$flag") ;;
+        esac
+      done
+      ;;
+  esac
+done
+
+if (( ${#fields[@]} == 0 )); then
+  fields=(i d r c)
+fi
+
+for field in "${fields[@]}"; do
+  case "$field" in
+    i) label="Distributor ID:"; value="Ubuntu" ;;
+    d) label="Description:"; value="Ubuntu 22.04 LTS" ;;
+    r) label="Release:"; value="22.04" ;;
+    c) label="Codename:"; value="jammy" ;;
+  esac
+  if (( silent )); then
+    printf "%s\n" "$value"
+  else
+    printf "%s\t%s\n" "$label" "$value"
+  fi
+done
+LSB_RELEASE
+  chmod 755 "$tmp/fake-bin/lsb_release"
+
   printf 'Starting Cloudpath with temporary Ubuntu compatibility metadata.\n'
   printf 'Your enrollment archive stays in a private temporary directory and is deleted on exit.\n'
 
@@ -179,7 +229,7 @@ RELEASE
       "XAUTHORITY=${XAUTHORITY:-}" \
       "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-}" \
       "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}" \
-      "$RUNTIME_HELPER" "$(id -u)" "$(id -g)" "$payload_root" "$tmp/fake-release"
+      "$RUNTIME_HELPER" "$(id -u)" "$(id -g)" "$payload_root" "$tmp/fake-release" "$tmp/fake-bin"
   then
     return 0
   else
@@ -199,20 +249,22 @@ cat > "$script_dir/cloudpath-arch-ns" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { printf 'cloudpath-arch-ns: must run as root\n' >&2; exit 1; }
-[[ $# -eq 4 ]] || { printf 'cloudpath-arch-ns: invalid arguments\n' >&2; exit 2; }
-uid=$1; gid=$2; payload_root=$3; fake_release=$4
+[[ $# -eq 5 ]] || { printf 'cloudpath-arch-ns: invalid arguments\n' >&2; exit 2; }
+uid=$1; gid=$2; payload_root=$3; fake_release=$4; fake_bin=$5
 [[ "$uid" =~ ^[0-9]+$ && "$gid" =~ ^[0-9]+$ ]] || { printf 'cloudpath-arch-ns: invalid uid/gid\n' >&2; exit 2; }
 [[ -x "$payload_root/Cloudpath-x64" ]] || { printf 'cloudpath-arch-ns: Cloudpath executable missing\n' >&2; exit 1; }
 [[ -f "$fake_release/lsb-release" && -f "$fake_release/os-release" ]] || { printf 'cloudpath-arch-ns: compatibility metadata missing\n' >&2; exit 1; }
+[[ -x "$fake_bin/lsb_release" ]] || { printf 'cloudpath-arch-ns: compatibility command missing\n' >&2; exit 1; }
 [[ -e /etc/lsb-release ]] || { printf 'cloudpath-arch-ns: /etc/lsb-release missing; install lsb-release\n' >&2; exit 1; }
 [[ -e /usr/lib/os-release ]] || { printf 'cloudpath-arch-ns: /usr/lib/os-release missing\n' >&2; exit 1; }
-unshare --mount --fork --propagation private -- /usr/lib/cloudpath-arch/cloudpath-arch-mount-run "$uid" "$gid" "$payload_root" "$fake_release"
+unshare --mount --fork --propagation private -- /usr/lib/cloudpath-arch/cloudpath-arch-mount-run "$uid" "$gid" "$payload_root" "$fake_release" "$fake_bin"
 SCRIPT
 
 cat > "$script_dir/cloudpath-arch-mount-run" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
-uid=$1; gid=$2; payload_root=$3; fake_release=$4
+[[ $# -eq 5 ]] || { printf 'cloudpath-arch-mount-run: invalid arguments\n' >&2; exit 2; }
+uid=$1; gid=$2; payload_root=$3; fake_release=$4; fake_bin=$5
 mount --bind "$fake_release/lsb-release" /etc/lsb-release
 mount -o remount,bind,ro /etc/lsb-release
 mount --bind "$fake_release/os-release" /usr/lib/os-release
@@ -223,7 +275,7 @@ if [[ -e /etc/os-release && ! -L /etc/os-release ]]; then
 fi
 cd "$payload_root"
 exec setpriv --reuid="$uid" --regid="$gid" --init-groups --reset-env env \
-  "HOME=${HOME:-/tmp}" "USER=${USER:-}" "LOGNAME=${LOGNAME:-}" "PATH=${PATH:-/usr/local/sbin:/usr/local/bin:/usr/bin}" \
+  "HOME=${HOME:-/tmp}" "USER=${USER:-}" "LOGNAME=${LOGNAME:-}" "PATH=$fake_bin:${PATH:-/usr/local/sbin:/usr/local/bin:/usr/bin}" \
   "DISPLAY=${DISPLAY:-}" "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}" "XAUTHORITY=${XAUTHORITY:-}" \
   "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-}" "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}" ./Cloudpath-x64
 SCRIPT
