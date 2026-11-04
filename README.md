@@ -13,7 +13,9 @@ It may also work with other schools and organizations using Debian&Fedora instal
 
 1. Download your own Debian&Fedora installer (`Cloudpath-x64.tar.bz2`) schools website.
 
-2. Run this command:
+   https://eu5.cloudpath.net/enroll/Atlas-College/AtlasCollege/process
+
+3. Run this command:
 > [!NOTE]
 > This will install that in Downloads file.
 ```bash
