@@ -34,6 +34,22 @@ This wrapper temporarily makes Debian&Fedora installer detect Ubuntu 22.04 witho
 
 It installs the required dependencies and runs your own Debian&Fedora installer.
 
+## Troubleshooting
+
+If the Cloudpath executable aborts with `std::out_of_range` or
+`basic_string::substr`, the cause inside the proprietary executable remains
+unconfirmed. The Arch wrapper now reports exit status 134 without masking it
+with a Bash cleanup error.
+
+To inspect the crash locally:
+
+```bash
+coredumpctl info Cloudpath-x64
+```
+
+Enrollment archives contain confidential tokens. Do not publish
+`session.properties`, full core dumps, or unredacted enrollment logs.
+
 ## Requirements
 
 - Arch Linux (x86_64)

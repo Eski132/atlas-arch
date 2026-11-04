@@ -4,6 +4,9 @@ set -euo pipefail
 PROGRAM='cloudpath-arch'
 RUNTIME_HELPER='/usr/lib/cloudpath-arch/cloudpath-arch-ns'
 
+# EXIT runs after main returns, so the cleanup path must not be local to main.
+tmp=''
+
 usage() {
   cat <<'USAGE'
 Usage:
@@ -75,7 +78,7 @@ show_check() {
 }
 
 main() {
-  local check_only=0 archive tmp payload_root runtime_base
+  local check_only=0 archive payload_root runtime_base
 
   if [[ ${1:-} == '--check' ]]; then
     check_only=1
@@ -148,7 +151,8 @@ RELEASE
   printf 'Starting Cloudpath with temporary Ubuntu compatibility metadata.\n'
   printf 'Your enrollment archive stays in a private temporary directory and is deleted on exit.\n'
 
-  sudo \
+  local launch_status
+  if sudo \
     env \
       "HOME=$HOME" \
       "USER=${USER:-$(id -un)}" \
@@ -160,6 +164,16 @@ RELEASE
       "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-}" \
       "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}" \
       "$RUNTIME_HELPER" "$(id -u)" "$(id -g)" "$payload_root" "$tmp/fake-release"
+  then
+    return 0
+  else
+    launch_status=$?
+    if (( launch_status == 134 )); then
+      printf 'cloudpath-arch: Cloudpath aborted (exit 134). The vendor executable crashed.\n' >&2
+      printf 'cloudpath-arch: Inspect the crash with: coredumpctl info Cloudpath-x64\n' >&2
+    fi
+    return "$launch_status"
+  fi
 }
 
 main "$@"
