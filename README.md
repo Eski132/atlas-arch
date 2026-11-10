@@ -54,9 +54,9 @@ Cloudpath's Linux installer may check for Ubuntu/Fedora metadata even when it
 uses NetworkManager for the actual connection. The wrapper:
 
 1. validates and extracts the user's archive as the invoking user;
-2. creates temporary Ubuntu 22.04 compatibility files and an `lsb_release`
-   shim with mode 0644/0755 as appropriate;
-3. asks `sudo` to start a private **mount** namespace;
+2. asks `sudo` to start a private **mount** namespace;
+3. creates root-owned temporary Ubuntu 22.04 compatibility files and an
+   `lsb_release` shim inside that namespace;
 4. masks the relevant release files only in that namespace; and
 5. drops privileges back to the invoking desktop user before starting the
    proprietary `Cloudpath-x64` executable.
@@ -70,7 +70,9 @@ The child environment uses an explicit allowlist. Set variables remain set,
 intentionally empty variables remain empty, and absent variables remain absent.
 `HOME`, `USER`, `LOGNAME`, `SHELL`, and a trusted `PATH` are derived from the
 invoking account after privilege drop. Sudo bookkeeping, loader variables, and
-shell startup variables are not forwarded.
+shell startup variables are not forwarded. The launcher puts the sudo,
+namespace, and vendor chain in a separate process group so interruption can
+terminate the group before private temporary data is cleaned up.
 
 ## Archive safety
 

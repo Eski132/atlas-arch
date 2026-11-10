@@ -48,28 +48,60 @@ build_vendor_env() {
 }
 
 run_vendor() {
-  [[ $# -eq 5 ]] || { printf '%s: expected UID GID PAYLOAD_ROOT FAKE_RELEASE FAKE_BIN\n' "$PROGRAM" >&2; exit 2; }
-  local uid=$1 gid=$2 payload_root=$3 fake_release=$4 fake_bin=$5
+  [[ $# -eq 3 ]] || { printf '%s: expected UID GID PAYLOAD_ROOT\n' "$PROGRAM" >&2; exit 2; }
+  local uid=$1 gid=$2 payload_root=$3
+  local compat_root=''
   local -a vendor_env=()
 
   [[ ${EUID:-$(/usr/bin/id -u)} -eq 0 ]] || fail 'must run as root'
   [[ "$uid" =~ ^[1-9][0-9]*$ ]] || fail 'invalid non-root UID'
   [[ "$gid" =~ ^[0-9]+$ ]] || fail 'invalid GID'
-  [[ -d "$payload_root" && -f "$payload_root/Cloudpath-x64" ]] || fail 'payload is missing'
-  [[ -d "$fake_release" && -r "$fake_release/lsb-release" && -r "$fake_release/os-release" ]] || fail 'compatibility metadata is missing'
-  [[ -d "$fake_bin" && -x "$fake_bin/lsb_release" ]] || fail 'compatibility command is missing'
+  /usr/bin/getent passwd "$uid" >/dev/null || fail "UID is not present in the passwd database: $uid"
+  /usr/bin/getent group "$gid" >/dev/null || fail "GID is not present in the group database: $gid"
+  [[ -d "$payload_root" && ! -L "$payload_root" ]] || fail 'payload directory is missing or a symbolic link'
+  [[ -f "$payload_root/Cloudpath-x64" && ! -L "$payload_root/Cloudpath-x64" ]] || fail 'Cloudpath executable is missing or a symbolic link'
+  [[ -f "$payload_root/network_config.xml" && -f "$payload_root/session.properties" ]] || fail 'Cloudpath payload metadata is missing'
+  [[ ! -L "$payload_root/network_config.xml" && ! -L "$payload_root/session.properties" ]] || fail 'Cloudpath payload metadata must not be symbolic links'
+  [[ $(/usr/bin/stat -c '%u' "$payload_root") == "$uid" ]] || fail 'payload directory is not owned by the invoking user'
+  [[ $(/usr/bin/stat -c '%u' "$payload_root/Cloudpath-x64") == "$uid" ]] || fail 'Cloudpath executable is not owned by the invoking user'
+  [[ -e /etc/lsb-release ]] || fail '/etc/lsb-release is missing; install the Arch lsb-release package'
+  [[ -e /usr/lib/os-release && -e /etc/os-release ]] || fail 'os-release metadata paths are missing'
 
-  /usr/bin/mount --bind "$fake_release/lsb-release" /etc/lsb-release
+  # The compatibility files are created root-owned inside the already-private
+  # mount namespace. User-controlled paths are never bind-mounted as root.
+  compat_root=$(/usr/bin/mktemp -d /run/cloudpath-arch.XXXXXXXX)
+  /usr/bin/mkdir -m 755 "$compat_root/bin"
+  cat > "$compat_root/lsb-release" <<'RELEASE'
+DISTRIB_ID=Ubuntu
+DISTRIB_RELEASE=22.04
+DISTRIB_CODENAME=jammy
+DISTRIB_DESCRIPTION="Ubuntu 22.04 LTS"
+RELEASE
+  cat > "$compat_root/os-release" <<'RELEASE'
+NAME="Ubuntu"
+VERSION="22.04 LTS (Jammy Jellyfish)"
+ID=ubuntu
+ID_LIKE=debian
+PRETTY_NAME="Ubuntu 22.04 LTS"
+VERSION_ID="22.04"
+VERSION_CODENAME=jammy
+UBUNTU_CODENAME=jammy
+RELEASE
+  /usr/bin/chmod 644 "$compat_root/lsb-release" "$compat_root/os-release"
+  /usr/bin/install -m 755 /usr/lib/cloudpath-arch/cloudpath-arch-lsb-release "$compat_root/bin/lsb_release"
+  trap '/usr/bin/rm -rf -- "$compat_root"' EXIT
+
+  /usr/bin/mount --bind "$compat_root/lsb-release" /etc/lsb-release
   /usr/bin/mount -o remount,bind,ro /etc/lsb-release
-  /usr/bin/mount --bind "$fake_release/os-release" /usr/lib/os-release
+  /usr/bin/mount --bind "$compat_root/os-release" /usr/lib/os-release
   /usr/bin/mount -o remount,bind,ro /usr/lib/os-release
   if [[ -e /etc/os-release && ! -L /etc/os-release ]]; then
-    /usr/bin/mount --bind "$fake_release/os-release" /etc/os-release
+    /usr/bin/mount --bind "$compat_root/os-release" /etc/os-release
     /usr/bin/mount -o remount,bind,ro /etc/os-release
   fi
 
   cd "$payload_root"
-  build_vendor_env "$uid" "$fake_bin" vendor_env
+  build_vendor_env "$uid" "$compat_root/bin" vendor_env
   exec /usr/bin/setpriv \
     --reuid="$uid" \
     --regid="$gid" \
@@ -79,6 +111,6 @@ run_vendor() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  [[ $# -eq 5 ]] || { printf '%s: expected UID GID PAYLOAD_ROOT FAKE_RELEASE FAKE_BIN\n' "$PROGRAM" >&2; exit 2; }
+  [[ $# -eq 3 ]] || { printf '%s: expected UID GID PAYLOAD_ROOT\n' "$PROGRAM" >&2; exit 2; }
   run_vendor "$@"
 fi

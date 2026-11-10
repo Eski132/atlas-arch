@@ -10,25 +10,24 @@ fail() {
 }
 
 [[ ${EUID:-$(/usr/bin/id -u)} -eq 0 ]] || fail 'must run as root through sudo'
-[[ $# -eq 5 ]] || { printf '%s: expected UID GID PAYLOAD_ROOT FAKE_RELEASE FAKE_BIN\n' "$PROGRAM" >&2; exit 2; }
+[[ $# -eq 3 ]] || { printf '%s: expected UID GID PAYLOAD_ROOT\n' "$PROGRAM" >&2; exit 2; }
 
 uid=$1
 gid=$2
 payload_root=$3
-fake_release=$4
-fake_bin=$5
 
 [[ "$uid" =~ ^[1-9][0-9]*$ ]] || { printf '%s: invalid non-root UID\n' "$PROGRAM" >&2; exit 2; }
 [[ "$gid" =~ ^[0-9]+$ ]] || { printf '%s: invalid GID\n' "$PROGRAM" >&2; exit 2; }
 /usr/bin/getent passwd "$uid" >/dev/null || fail "UID is not present in the passwd database: $uid"
 /usr/bin/getent group "$gid" >/dev/null || fail "GID is not present in the group database: $gid"
 [[ "$payload_root" == /* && -d "$payload_root" ]] || fail 'payload directory is missing or not absolute'
+[[ ! -L "$payload_root" ]] || fail 'payload directory must not be a symbolic link'
 [[ -f "$payload_root/Cloudpath-x64" ]] || fail 'Cloudpath executable is missing'
+[[ ! -L "$payload_root/Cloudpath-x64" ]] || fail 'Cloudpath executable must not be a symbolic link'
 [[ -f "$payload_root/network_config.xml" && -f "$payload_root/session.properties" ]] || fail 'Cloudpath payload metadata is missing'
-[[ "$fake_release" == /* && -d "$fake_release" ]] || fail 'compatibility metadata directory is missing or not absolute'
-[[ -r "$fake_release/lsb-release" && -r "$fake_release/os-release" ]] || fail 'compatibility metadata is not readable'
-[[ "$fake_bin" == /* && -d "$fake_bin" ]] || fail 'compatibility command directory is missing or not absolute'
-[[ -x "$fake_bin/lsb_release" ]] || fail 'compatibility lsb_release command is missing'
+[[ ! -L "$payload_root/network_config.xml" && ! -L "$payload_root/session.properties" ]] || fail 'Cloudpath payload metadata must not be symbolic links'
+[[ $(/usr/bin/stat -c '%u' "$payload_root") == "$uid" ]] || fail 'payload directory is not owned by the invoking user'
+[[ $(/usr/bin/stat -c '%u' "$payload_root/Cloudpath-x64") == "$uid" ]] || fail 'Cloudpath executable is not owned by the invoking user'
 [[ -e /etc/lsb-release ]] || fail 'the Arch lsb-release package is required (/etc/lsb-release is missing)'
 [[ -e /usr/lib/os-release ]] || fail '/usr/lib/os-release is missing'
 [[ -e /etc/os-release ]] || fail '/etc/os-release is missing'
@@ -39,4 +38,4 @@ fake_bin=$5
 # D-Bus and the invoking user's files remain visible to the vendor program.
 # --propagation private must happen before any metadata is masked.
 exec /usr/bin/unshare --mount --fork --propagation private -- \
-  "$MOUNT_RUN" "$uid" "$gid" "$payload_root" "$fake_release" "$fake_bin"
+  "$MOUNT_RUN" "$uid" "$gid" "$payload_root"

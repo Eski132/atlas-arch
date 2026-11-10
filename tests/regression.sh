@@ -225,6 +225,44 @@ for expected in 0 42 134; do
 done
 pass 'child exit status preservation'
 
+# Exercise the parent signal path with a separate process group. The fixture
+# avoids sudo/unshare but verifies that the parent signals the whole child
+# group and waits before EXIT cleanup.
+signal_script=$TEST_TMP/signal-parent.sh
+signal_target=$TEST_TMP/signal-cleanup-target
+cat > "$signal_script" <<'SIGNAL_SCRIPT'
+#!/usr/bin/env bash
+set -u
+source "$1/cloudpath-arch"
+tmp=$2
+/usr/bin/mkdir "$tmp"
+trap cleanup EXIT
+trap 'on_signal TERM' TERM
+signal_status=0
+signal_seen=0
+launch_pid=''
+command=(/usr/bin/setsid /usr/bin/bash -c 'sleep 30')
+if run_child_and_wait command; then
+  status=0
+else
+  status=$?
+fi
+exit "$status"
+SIGNAL_SCRIPT
+/usr/bin/chmod 755 "$signal_script"
+"$signal_script" "$ROOT" "$signal_target" &
+signal_parent=$!
+/usr/bin/sleep 0.2
+/usr/bin/kill -TERM "$signal_parent"
+if wait "$signal_parent"; then
+  signal_result=0
+else
+  signal_result=$?
+fi
+assert_equal 143 "$signal_result" 'parent interruption status'
+[[ ! -e "$signal_target" ]] || fail 'signal cleanup ran before child group exited'
+pass 'signal handling terminates the child group before cleanup'
+
 # Cleanup is separate from signal handling and removes only the private temp tree.
 tmp=$TEST_TMP/cleanup-target
 /usr/bin/mkdir "$tmp"
@@ -238,6 +276,9 @@ for file in cloudpath-arch cloudpath-arch-ns cloudpath-arch-mount-run cloudpath-
   assert_contains "$file" "$(/usr/bin/cat "$ROOT/PKGBUILD")" "PKGBUILD includes $file"
 done
 assert_not_contains 'cat > "$script_dir/cloudpath-arch"' "$(/usr/bin/cat "$ROOT/install.sh")" 'installer does not embed a second implementation'
-pass 'installation methods use the same runtime files'
+assert_contains '[[ $# -eq 3 ]]' "$(/usr/bin/cat "$ROOT/cloudpath-arch-ns")" 'namespace helper has one interface'
+assert_contains '[[ $# -eq 3 ]]' "$(/usr/bin/cat "$ROOT/cloudpath-arch-mount-run")" 'mount helper has one interface'
+assert_not_contains 'fake_release' "$(/usr/bin/cat "$ROOT/cloudpath-arch-ns")" 'namespace helper does not accept user metadata paths'
+pass 'installation methods use the same runtime files and helper interfaces'
 
 printf 'All regression tests passed.\n'

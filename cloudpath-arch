@@ -10,6 +10,7 @@ TRUSTED_ROOT_PATH='/usr/local/sbin:/usr/local/bin:/usr/bin:/bin'
 tmp=''
 launch_pid=''
 signal_status=0
+signal_seen=0
 
 usage() {
   cat <<'USAGE'
@@ -152,7 +153,14 @@ on_signal() {
   esac
 
   if [[ -n "$launch_pid" ]] && /usr/bin/kill -0 "$launch_pid" 2>/dev/null; then
-    /usr/bin/kill -TERM "$launch_pid" 2>/dev/null || true
+    # setsid gives the sudo/unshare/vendor chain its own process group. Signal
+    # the whole group so descendants cannot outlive the parent cleanup.
+    if (( signal_status != 0 && ${signal_seen:-0} != 0 )); then
+      /usr/bin/kill -KILL -- "-$launch_pid" 2>/dev/null || true
+    else
+      /usr/bin/kill -TERM -- "-$launch_pid" 2>/dev/null || /usr/bin/kill -TERM "$launch_pid" 2>/dev/null || true
+    fi
+    signal_seen=1
   elif [[ -z "$launch_pid" ]]; then
     exit "$signal_status"
   fi
@@ -216,7 +224,7 @@ main() {
   trap 'on_signal TERM' TERM
   trap 'on_signal HUP' HUP
 
-  /usr/bin/mkdir -p -- "$tmp/payload" "$tmp/fake-release" "$tmp/fake-bin"
+  /usr/bin/mkdir -p -- "$tmp/payload"
   if ! /usr/bin/tar -xjf "$archive" -C "$tmp/payload" --no-same-owner --no-same-permissions --no-overwrite-dir; then
     die 'archive extraction failed; it may be malformed or truncated'
   fi
@@ -239,32 +247,9 @@ main() {
 
   [[ -x "$RUNTIME_HELPER" ]] || die "runtime helper missing: $RUNTIME_HELPER"
   need_command /usr/bin/sudo
+  need_command /usr/bin/setsid
   need_command /usr/bin/systemctl
   /usr/bin/systemctl -q is-active NetworkManager.service || die 'NetworkManager is not running; start it explicitly before enrollment'
-
-  cat > "$tmp/fake-release/lsb-release" <<'RELEASE'
-DISTRIB_ID=Ubuntu
-DISTRIB_RELEASE=22.04
-DISTRIB_CODENAME=jammy
-DISTRIB_DESCRIPTION="Ubuntu 22.04 LTS"
-RELEASE
-  cat > "$tmp/fake-release/os-release" <<'RELEASE'
-NAME="Ubuntu"
-VERSION="22.04 LTS (Jammy Jellyfish)"
-ID=ubuntu
-ID_LIKE=debian
-PRETTY_NAME="Ubuntu 22.04 LTS"
-VERSION_ID="22.04"
-VERSION_CODENAME=jammy
-UBUNTU_CODENAME=jammy
-RELEASE
-  /usr/bin/chmod 644 "$tmp/fake-release/lsb-release" "$tmp/fake-release/os-release"
-  /usr/bin/install -m 755 /usr/lib/cloudpath-arch/cloudpath-arch-lsb-release "$tmp/fake-bin/lsb_release"
-
-  uid=$(/usr/bin/id -u)
-  gid=$(/usr/bin/id -g)
-  [[ "$uid" =~ ^[1-9][0-9]*$ ]] || die 'the launcher must be invoked by a non-root desktop user'
-  [[ "$gid" =~ ^[0-9]+$ ]] || die 'could not determine the invoking user group'
 
   root_env+=("PATH=$TRUSTED_ROOT_PATH")
   for name in DISPLAY WAYLAND_DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS \
@@ -278,7 +263,7 @@ RELEASE
   printf 'This mount namespace is not a sandbox: Cloudpath can access your files and the real NetworkManager.\n'
 
   # shellcheck disable=SC2034 # passed by name to run_child_and_wait
-  launch_command=(/usr/bin/sudo /usr/bin/env "${root_env[@]}" "$RUNTIME_HELPER" "$uid" "$gid" "$payload_root" "$tmp/fake-release" "$tmp/fake-bin")
+  launch_command=(/usr/bin/setsid /usr/bin/sudo /usr/bin/env "${root_env[@]}" "$RUNTIME_HELPER" "$uid" "$gid" "$payload_root")
   if run_child_and_wait launch_command; then
     launch_status=0
   else
