@@ -1,42 +1,116 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-uid=$1
-gid=$2
-payload_root=$3
-fake_release=$4
+PROGRAM='cloudpath-arch-mount-run'
+TRUSTED_USER_PATH='/usr/local/bin:/usr/bin:/bin'
 
-mount --bind "$fake_release/lsb-release" /etc/lsb-release
-mount -o remount,bind,ro /etc/lsb-release
+fail() {
+  printf '%s: %s\n' "$PROGRAM" "$*" >&2
+  exit 1
+}
 
-mount --bind "$fake_release/os-release" /usr/lib/os-release
-mount -o remount,bind,ro /usr/lib/os-release
+append_if_set() {
+  local -n output=$1
+  local name=$2
+  if [[ -v $name ]]; then
+    output+=("$name=${!name}")
+  fi
+}
 
-# /etc/os-release is normally a symlink to /usr/lib/os-release on Arch. If it
-# is a separate regular file on an Arch derivative, mask that file too.
-if [[ -e /etc/os-release && ! -L /etc/os-release ]]; then
-  mount --bind "$fake_release/os-release" /etc/os-release
-  mount -o remount,bind,ro /etc/os-release
+build_vendor_env() {
+  local uid=$1
+  local fake_bin=$2
+  # shellcheck disable=SC2178 # nameref points to the caller's array
+  local -n output=$3
+  local passwd_record user_name user_home user_shell
+
+  passwd_record=$(/usr/bin/getent passwd "$uid") || fail "UID is not present in the passwd database: $uid"
+  IFS=: read -r user_name _ _ _ _ user_home user_shell <<< "$passwd_record"
+  [[ -n "$user_name" && -n "$user_home" ]] || fail 'invoking user account is incomplete'
+  [[ -d "$user_home" ]] || fail "invoking user home does not exist: $user_home"
+  [[ -n "$user_shell" ]] || user_shell=/bin/sh
+
+  output=(
+    "HOME=$user_home"
+    "USER=$user_name"
+    "LOGNAME=$user_name"
+    "PATH=$fake_bin:$TRUSTED_USER_PATH"
+    "SHELL=$user_shell"
+  )
+
+  for name in DISPLAY WAYLAND_DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS \
+    XDG_RUNTIME_DIR XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE \
+    XDG_CONFIG_HOME XDG_DATA_HOME XDG_DATA_DIRS LANG LC_ALL LC_CTYPE; do
+    if [[ -v $name ]]; then
+      output+=("$name=${!name}")
+    fi
+  done
+}
+
+run_vendor() {
+  [[ $# -eq 3 ]] || { printf '%s: expected UID GID PAYLOAD_ROOT\n' "$PROGRAM" >&2; exit 2; }
+  local uid=$1 gid=$2 payload_root=$3
+  local compat_root=''
+  local -a vendor_env=()
+
+  [[ ${EUID:-$(/usr/bin/id -u)} -eq 0 ]] || fail 'must run as root'
+  [[ "$uid" =~ ^[1-9][0-9]*$ ]] || fail 'invalid non-root UID'
+  [[ "$gid" =~ ^[0-9]+$ ]] || fail 'invalid GID'
+  /usr/bin/getent passwd "$uid" >/dev/null || fail "UID is not present in the passwd database: $uid"
+  /usr/bin/getent group "$gid" >/dev/null || fail "GID is not present in the group database: $gid"
+  [[ -d "$payload_root" && ! -L "$payload_root" ]] || fail 'payload directory is missing or a symbolic link'
+  [[ -f "$payload_root/Cloudpath-x64" && ! -L "$payload_root/Cloudpath-x64" ]] || fail 'Cloudpath executable is missing or a symbolic link'
+  [[ -f "$payload_root/network_config.xml" && -f "$payload_root/session.properties" ]] || fail 'Cloudpath payload metadata is missing'
+  [[ ! -L "$payload_root/network_config.xml" && ! -L "$payload_root/session.properties" ]] || fail 'Cloudpath payload metadata must not be symbolic links'
+  [[ $(/usr/bin/stat -c '%u' "$payload_root") == "$uid" ]] || fail 'payload directory is not owned by the invoking user'
+  [[ $(/usr/bin/stat -c '%u' "$payload_root/Cloudpath-x64") == "$uid" ]] || fail 'Cloudpath executable is not owned by the invoking user'
+  [[ -e /etc/lsb-release ]] || fail '/etc/lsb-release is missing; install the Arch lsb-release package'
+  [[ -e /usr/lib/os-release && -e /etc/os-release ]] || fail 'os-release metadata paths are missing'
+
+  # The compatibility files are created root-owned inside the already-private
+  # mount namespace. User-controlled paths are never bind-mounted as root.
+  compat_root=$(/usr/bin/mktemp -d /run/cloudpath-arch.XXXXXXXX)
+  /usr/bin/mkdir -m 755 "$compat_root/bin"
+  cat > "$compat_root/lsb-release" <<'RELEASE'
+DISTRIB_ID=Ubuntu
+DISTRIB_RELEASE=22.04
+DISTRIB_CODENAME=jammy
+DISTRIB_DESCRIPTION="Ubuntu 22.04 LTS"
+RELEASE
+  cat > "$compat_root/os-release" <<'RELEASE'
+NAME="Ubuntu"
+VERSION="22.04 LTS (Jammy Jellyfish)"
+ID=ubuntu
+ID_LIKE=debian
+PRETTY_NAME="Ubuntu 22.04 LTS"
+VERSION_ID="22.04"
+VERSION_CODENAME=jammy
+UBUNTU_CODENAME=jammy
+RELEASE
+  /usr/bin/chmod 644 "$compat_root/lsb-release" "$compat_root/os-release"
+  /usr/bin/install -m 755 /usr/lib/cloudpath-arch/cloudpath-arch-lsb-release "$compat_root/bin/lsb_release"
+  trap '/usr/bin/rm -rf -- "$compat_root"' EXIT
+
+  /usr/bin/mount --bind "$compat_root/lsb-release" /etc/lsb-release
+  /usr/bin/mount -o remount,bind,ro /etc/lsb-release
+  /usr/bin/mount --bind "$compat_root/os-release" /usr/lib/os-release
+  /usr/bin/mount -o remount,bind,ro /usr/lib/os-release
+  if [[ -e /etc/os-release && ! -L /etc/os-release ]]; then
+    /usr/bin/mount --bind "$compat_root/os-release" /etc/os-release
+    /usr/bin/mount -o remount,bind,ro /etc/os-release
+  fi
+
+  cd "$payload_root"
+  build_vendor_env "$uid" "$compat_root/bin" vendor_env
+  exec /usr/bin/setpriv \
+    --reuid="$uid" \
+    --regid="$gid" \
+    --init-groups \
+    --reset-env \
+    /usr/bin/env "${vendor_env[@]}" ./Cloudpath-x64
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  [[ $# -eq 3 ]] || { printf '%s: expected UID GID PAYLOAD_ROOT\n' "$PROGRAM" >&2; exit 2; }
+  run_vendor "$@"
 fi
-
-cd "$payload_root"
-
-# Drop back to the invoking desktop user before launching Cloudpath. setuid
-# helpers (sudo/pkexec) continue to work normally because this is only a mount
-# namespace, not a user namespace.
-exec setpriv \
-  --reuid="$uid" \
-  --regid="$gid" \
-  --init-groups \
-  --reset-env \
-  env \
-    "HOME=${HOME:-/tmp}" \
-    "USER=${USER:-}" \
-    "LOGNAME=${LOGNAME:-}" \
-    "PATH=${PATH:-/usr/local/sbin:/usr/local/bin:/usr/bin}" \
-    "DISPLAY=${DISPLAY:-}" \
-    "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}" \
-    "XAUTHORITY=${XAUTHORITY:-}" \
-    "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-}" \
-    "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}" \
-    ./Cloudpath-x64

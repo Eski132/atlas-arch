@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -eu
+
+silent=0
+fields=()
+
+for arg in "$@"; do
+  case "$arg" in
+    -s|--short)
+      silent=1
+      ;;
+    -a|--all)
+      fields=(i d r c)
+      ;;
+    -i|--id)
+      fields+=(i)
+      ;;
+    -d|--description)
+      fields+=(d)
+      ;;
+    -r|--release)
+      fields+=(r)
+      ;;
+    -c|--codename)
+      fields+=(c)
+      ;;
+    -[sidrc]*)
+      flags=${arg#-}
+      while [[ -n "$flags" ]]; do
+        flag=${flags:0:1}
+        flags=${flags:1}
+        case "$flag" in
+          s) silent=1 ;;
+          i|d|r|c) fields+=("$flag") ;;
+        esac
+      done
+      ;;
+    --*)
+      # lsb_release ignores unknown long options in the common invocations.
+      ;;
+    *)
+      ;;
+  esac
+done
+
+if (( ${#fields[@]} == 0 )); then
+  fields=(i d r c)
+fi
+
+for field in "${fields[@]}"; do
+  case "$field" in
+    i) label='Distributor ID:'; value='Ubuntu' ;;
+    d) label='Description:'; value='Ubuntu 22.04 LTS' ;;
+    r) label='Release:'; value='22.04' ;;
+    c) label='Codename:'; value='jammy' ;;
+  esac
+
+  if (( silent )); then
+    printf '%s\n' "$value"
+  else
+    printf '%s\t%s\n' "$label" "$value"
+  fi
+done
