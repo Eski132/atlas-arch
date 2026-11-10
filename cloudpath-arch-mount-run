@@ -1,42 +1,84 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-uid=$1
-gid=$2
-payload_root=$3
-fake_release=$4
+PROGRAM='cloudpath-arch-mount-run'
+TRUSTED_USER_PATH='/usr/local/bin:/usr/bin:/bin'
 
-mount --bind "$fake_release/lsb-release" /etc/lsb-release
-mount -o remount,bind,ro /etc/lsb-release
+fail() {
+  printf '%s: %s\n' "$PROGRAM" "$*" >&2
+  exit 1
+}
 
-mount --bind "$fake_release/os-release" /usr/lib/os-release
-mount -o remount,bind,ro /usr/lib/os-release
+append_if_set() {
+  local -n output=$1
+  local name=$2
+  if [[ -v $name ]]; then
+    output+=("$name=${!name}")
+  fi
+}
 
-# /etc/os-release is normally a symlink to /usr/lib/os-release on Arch. If it
-# is a separate regular file on an Arch derivative, mask that file too.
-if [[ -e /etc/os-release && ! -L /etc/os-release ]]; then
-  mount --bind "$fake_release/os-release" /etc/os-release
-  mount -o remount,bind,ro /etc/os-release
+build_vendor_env() {
+  local uid=$1
+  local fake_bin=$2
+  # shellcheck disable=SC2178 # nameref points to the caller's array
+  local -n output=$3
+  local passwd_record user_name user_home user_shell
+
+  passwd_record=$(/usr/bin/getent passwd "$uid") || fail "UID is not present in the passwd database: $uid"
+  IFS=: read -r user_name _ _ _ _ user_home user_shell <<< "$passwd_record"
+  [[ -n "$user_name" && -n "$user_home" ]] || fail 'invoking user account is incomplete'
+  [[ -d "$user_home" ]] || fail "invoking user home does not exist: $user_home"
+  [[ -n "$user_shell" ]] || user_shell=/bin/sh
+
+  output=(
+    "HOME=$user_home"
+    "USER=$user_name"
+    "LOGNAME=$user_name"
+    "PATH=$fake_bin:$TRUSTED_USER_PATH"
+    "SHELL=$user_shell"
+  )
+
+  for name in DISPLAY WAYLAND_DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS \
+    XDG_RUNTIME_DIR XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE \
+    XDG_CONFIG_HOME XDG_DATA_HOME XDG_DATA_DIRS LANG LC_ALL LC_CTYPE; do
+    if [[ -v $name ]]; then
+      output+=("$name=${!name}")
+    fi
+  done
+}
+
+run_vendor() {
+  [[ $# -eq 5 ]] || { printf '%s: expected UID GID PAYLOAD_ROOT FAKE_RELEASE FAKE_BIN\n' "$PROGRAM" >&2; exit 2; }
+  local uid=$1 gid=$2 payload_root=$3 fake_release=$4 fake_bin=$5
+  local -a vendor_env=()
+
+  [[ ${EUID:-$(/usr/bin/id -u)} -eq 0 ]] || fail 'must run as root'
+  [[ "$uid" =~ ^[1-9][0-9]*$ ]] || fail 'invalid non-root UID'
+  [[ "$gid" =~ ^[0-9]+$ ]] || fail 'invalid GID'
+  [[ -d "$payload_root" && -f "$payload_root/Cloudpath-x64" ]] || fail 'payload is missing'
+  [[ -d "$fake_release" && -r "$fake_release/lsb-release" && -r "$fake_release/os-release" ]] || fail 'compatibility metadata is missing'
+  [[ -d "$fake_bin" && -x "$fake_bin/lsb_release" ]] || fail 'compatibility command is missing'
+
+  /usr/bin/mount --bind "$fake_release/lsb-release" /etc/lsb-release
+  /usr/bin/mount -o remount,bind,ro /etc/lsb-release
+  /usr/bin/mount --bind "$fake_release/os-release" /usr/lib/os-release
+  /usr/bin/mount -o remount,bind,ro /usr/lib/os-release
+  if [[ -e /etc/os-release && ! -L /etc/os-release ]]; then
+    /usr/bin/mount --bind "$fake_release/os-release" /etc/os-release
+    /usr/bin/mount -o remount,bind,ro /etc/os-release
+  fi
+
+  cd "$payload_root"
+  build_vendor_env "$uid" "$fake_bin" vendor_env
+  exec /usr/bin/setpriv \
+    --reuid="$uid" \
+    --regid="$gid" \
+    --init-groups \
+    --reset-env \
+    /usr/bin/env "${vendor_env[@]}" ./Cloudpath-x64
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  [[ $# -eq 5 ]] || { printf '%s: expected UID GID PAYLOAD_ROOT FAKE_RELEASE FAKE_BIN\n' "$PROGRAM" >&2; exit 2; }
+  run_vendor "$@"
 fi
-
-cd "$payload_root"
-
-# Drop back to the invoking desktop user before launching Cloudpath. setuid
-# helpers (sudo/pkexec) continue to work normally because this is only a mount
-# namespace, not a user namespace.
-exec setpriv \
-  --reuid="$uid" \
-  --regid="$gid" \
-  --init-groups \
-  --reset-env \
-  env \
-    "HOME=${HOME:-/tmp}" \
-    "USER=${USER:-}" \
-    "LOGNAME=${LOGNAME:-}" \
-    "PATH=${PATH:-/usr/local/sbin:/usr/local/bin:/usr/bin}" \
-    "DISPLAY=${DISPLAY:-}" \
-    "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}" \
-    "XAUTHORITY=${XAUTHORITY:-}" \
-    "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-}" \
-    "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}" \
-    ./Cloudpath-x64

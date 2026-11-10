@@ -1,23 +1,42 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-[[ ${EUID:-$(id -u)} -eq 0 ]] || { printf 'cloudpath-arch-ns: must run as root\n' >&2; exit 1; }
-[[ $# -eq 4 ]] || { printf 'cloudpath-arch-ns: invalid arguments\n' >&2; exit 2; }
+PROGRAM='cloudpath-arch-ns'
+MOUNT_RUN='/usr/lib/cloudpath-arch/cloudpath-arch-mount-run'
+
+fail() {
+  printf '%s: %s\n' "$PROGRAM" "$*" >&2
+  exit 1
+}
+
+[[ ${EUID:-$(/usr/bin/id -u)} -eq 0 ]] || fail 'must run as root through sudo'
+[[ $# -eq 5 ]] || { printf '%s: expected UID GID PAYLOAD_ROOT FAKE_RELEASE FAKE_BIN\n' "$PROGRAM" >&2; exit 2; }
 
 uid=$1
 gid=$2
 payload_root=$3
 fake_release=$4
+fake_bin=$5
 
-[[ "$uid" =~ ^[0-9]+$ && "$gid" =~ ^[0-9]+$ ]] || { printf 'cloudpath-arch-ns: invalid uid/gid\n' >&2; exit 2; }
-[[ -x "$payload_root/Cloudpath-x64" ]] || { printf 'cloudpath-arch-ns: Cloudpath executable missing\n' >&2; exit 1; }
-[[ -f "$fake_release/lsb-release" && -f "$fake_release/os-release" ]] || { printf 'cloudpath-arch-ns: compatibility metadata missing\n' >&2; exit 1; }
-[[ -e /etc/lsb-release ]] || { printf 'cloudpath-arch-ns: /etc/lsb-release missing; install the Arch lsb-release package\n' >&2; exit 1; }
-[[ -e /usr/lib/os-release ]] || { printf 'cloudpath-arch-ns: /usr/lib/os-release missing\n' >&2; exit 1; }
+[[ "$uid" =~ ^[1-9][0-9]*$ ]] || { printf '%s: invalid non-root UID\n' "$PROGRAM" >&2; exit 2; }
+[[ "$gid" =~ ^[0-9]+$ ]] || { printf '%s: invalid GID\n' "$PROGRAM" >&2; exit 2; }
+/usr/bin/getent passwd "$uid" >/dev/null || fail "UID is not present in the passwd database: $uid"
+/usr/bin/getent group "$gid" >/dev/null || fail "GID is not present in the group database: $gid"
+[[ "$payload_root" == /* && -d "$payload_root" ]] || fail 'payload directory is missing or not absolute'
+[[ -f "$payload_root/Cloudpath-x64" ]] || fail 'Cloudpath executable is missing'
+[[ -f "$payload_root/network_config.xml" && -f "$payload_root/session.properties" ]] || fail 'Cloudpath payload metadata is missing'
+[[ "$fake_release" == /* && -d "$fake_release" ]] || fail 'compatibility metadata directory is missing or not absolute'
+[[ -r "$fake_release/lsb-release" && -r "$fake_release/os-release" ]] || fail 'compatibility metadata is not readable'
+[[ "$fake_bin" == /* && -d "$fake_bin" ]] || fail 'compatibility command directory is missing or not absolute'
+[[ -x "$fake_bin/lsb_release" ]] || fail 'compatibility lsb_release command is missing'
+[[ -e /etc/lsb-release ]] || fail 'the Arch lsb-release package is required (/etc/lsb-release is missing)'
+[[ -e /usr/lib/os-release ]] || fail '/usr/lib/os-release is missing'
+[[ -e /etc/os-release ]] || fail '/etc/os-release is missing'
+[[ -x /usr/bin/unshare ]] || fail 'util-linux unshare is required'
+[[ -x "$MOUNT_RUN" ]] || fail "runtime mount helper is missing: $MOUNT_RUN"
 
-# We only isolate mount topology. Network, D-Bus and the host filesystem remain
-# available because Cloudpath must talk to the real NetworkManager and may ask
-# for privilege through the normal desktop/sudo mechanisms.
-unshare --mount --fork --propagation private -- \
-  /usr/lib/cloudpath-arch/cloudpath-arch-mount-run \
-  "$uid" "$gid" "$payload_root" "$fake_release"
+# This is only a private mount namespace. The real network, NetworkManager,
+# D-Bus and the invoking user's files remain visible to the vendor program.
+# --propagation private must happen before any metadata is masked.
+exec /usr/bin/unshare --mount --fork --propagation private -- \
+  "$MOUNT_RUN" "$uid" "$gid" "$payload_root" "$fake_release" "$fake_bin"

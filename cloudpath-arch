@@ -3,9 +3,13 @@ set -euo pipefail
 
 PROGRAM='cloudpath-arch'
 RUNTIME_HELPER='/usr/lib/cloudpath-arch/cloudpath-arch-ns'
+TRUSTED_ROOT_PATH='/usr/local/sbin:/usr/local/bin:/usr/bin:/bin'
 
-# EXIT runs after main returns, so the cleanup path must not be local to main.
+# The EXIT trap owns cleanup. Signal handlers only stop the child and preserve
+# the signal status; they never remove the payload while it may be running.
 tmp=''
+launch_pid=''
+signal_status=0
 
 usage() {
   cat <<'USAGE'
@@ -14,8 +18,8 @@ Usage:
   cloudpath-arch --check /path/to/Cloudpath-x64.tar.bz2
 
 Runs a user's own Cloudpath Linux installer on Arch Linux without modifying
-Arch's distro identification files. The Cloudpath archive is unpacked into a
-private temporary directory and removed when the program exits.
+Arch's distro identification files. The archive is unpacked into a private
+temporary directory and removed after the installer exits.
 USAGE
 }
 
@@ -24,61 +28,159 @@ die() {
   exit 1
 }
 
-need() {
-  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+need_command() {
+  local command=$1
+  [[ -x "$command" ]] || die "missing required command: $command"
 }
 
-check_archive_paths() {
-  local archive=$1 entry
-  while IFS= read -r entry; do
-    case "$entry" in
-      /*|../*|*/../*|*/..)
-        die "archive contains an unsafe path: $entry"
+append_if_set() {
+  local -n output=$1
+  local name=$2
+  if [[ -v $name ]]; then
+    output+=("$name=${!name}")
+  fi
+}
+
+archive_path_is_safe() {
+  local entry=$1 component
+  [[ -n "$entry" ]] || return 1
+  [[ "$entry" != /* ]] || return 1
+  IFS='/' read -r -a components <<< "$entry"
+  for component in "${components[@]}"; do
+    [[ "$component" != '..' ]] || return 1
+  done
+}
+
+validate_archive() {
+  local archive=$1 listing details line type entry
+  listing=$(/usr/bin/mktemp)
+  details=$(/usr/bin/mktemp)
+
+  if ! /usr/bin/tar -tjf "$archive" >"$listing"; then
+    /usr/bin/rm -f -- "$listing" "$details"
+    die 'archive cannot be listed; it may be malformed or truncated'
+  fi
+
+  if ! /usr/bin/tar -tvjf "$archive" >"$details"; then
+    /usr/bin/rm -f -- "$listing" "$details"
+    die 'archive metadata cannot be read; it may be malformed or truncated'
+  fi
+
+  while IFS= read -r line; do
+    type=${line:0:1}
+    case "$type" in
+      -|d) ;;
+      *)
+        /usr/bin/rm -f -- "$listing" "$details"
+        die 'archive contains a link, device, FIFO, socket, or other unsupported entry'
         ;;
     esac
-  done < <(tar -tjf "$archive")
+  done < "$details"
+
+  while IFS= read -r entry; do
+    archive_path_is_safe "$entry" || {
+      /usr/bin/rm -f -- "$listing" "$details"
+      die "archive contains an unsafe path: $entry"
+    }
+  done < "$listing"
+
+  /usr/bin/rm -f -- "$listing" "$details"
 }
 
 find_payload_root() {
-  local dir=$1 candidate
-  if [[ -x "$dir/Cloudpath-x64" && -f "$dir/network_config.xml" && -f "$dir/session.properties" ]]; then
-    printf '%s\n' "$dir"
-    return 0
+  local dir=$1 candidates candidate root
+  candidates=$(/usr/bin/mktemp)
+  if ! /usr/bin/find "$dir" -type f -name 'Cloudpath-x64' -print >"$candidates"; then
+    /usr/bin/rm -f -- "$candidates"
+    return 1
   fi
 
-  candidate=$(find "$dir" -mindepth 1 -maxdepth 3 -type f -name Cloudpath-x64 -print -quit)
-  [[ -n "$candidate" ]] || return 1
-  candidate=${candidate%/Cloudpath-x64}
-  [[ -f "$candidate/network_config.xml" && -f "$candidate/session.properties" ]] || return 1
-  printf '%s\n' "$candidate"
+  local valid=()
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    root=${candidate%/Cloudpath-x64}
+    if [[ -f "$root/network_config.xml" && -f "$root/session.properties" ]]; then
+      valid+=("$root")
+    fi
+  done < "$candidates"
+  /usr/bin/rm -f -- "$candidates"
+
+  if (( ${#valid[@]} == 0 )); then
+    return 1
+  fi
+  if (( ${#valid[@]} != 1 )); then
+    return 2
+  fi
+  printf '%s\n' "${valid[0]}"
 }
 
 show_check() {
-  local root=$1
-  local network='unknown' licensee='unknown'
-  network=$(sed -n 's:.*<name>\([^<]*\)</name>.*:\1:p' "$root/network_config.xml" | head -n1 || true)
-  licensee=$(sed -n 's:.*<licensee>\([^<]*\)</licensee>.*:\1:p' "$root/network_config.xml" | head -n1 || true)
+  local root=$1 network='unknown' licensee='unknown'
+  network=$(/usr/bin/sed -n 's:.*<name>\([^<]*\)</name>.*:\1:p' "$root/network_config.xml" | /usr/bin/head -n1 || true)
+  licensee=$(/usr/bin/sed -n 's:.*<licensee>\([^<]*\)</licensee>.*:\1:p' "$root/network_config.xml" | /usr/bin/head -n1 || true)
 
   printf 'Archive looks usable.\n'
   printf '  Network: %s\n' "$network"
   printf '  Licensee: %s\n' "$licensee"
-  printf '  Executable: %s\n' "$(file -b "$root/Cloudpath-x64")"
+  printf '  Executable: %s\n' "$(/usr/bin/file -b "$root/Cloudpath-x64")"
 
-  if grep -q '^authorizationToken=' "$root/session.properties"; then
+  if /usr/bin/grep -q '^authorizationToken=' "$root/session.properties"; then
     printf '  Enrollment token: present (value intentionally not displayed)\n'
   else
     printf '  Enrollment token: not found\n'
   fi
 
-  if grep -q '^enrollmentGuid=' "$root/session.properties"; then
+  if /usr/bin/grep -q '^enrollmentGuid=' "$root/session.properties"; then
     printf '  Enrollment GUID: present (value intentionally not displayed)\n'
   else
     printf '  Enrollment GUID: not found\n'
   fi
 }
 
+cleanup() {
+  if [[ -n "$tmp" && -d "$tmp" ]]; then
+    /usr/bin/rm -rf -- "$tmp" || true
+  fi
+}
+
+on_signal() {
+  local signal=$1
+  case "$signal" in
+    INT) signal_status=130 ;;
+    TERM) signal_status=143 ;;
+    HUP) signal_status=129 ;;
+  esac
+
+  if [[ -n "$launch_pid" ]] && /usr/bin/kill -0 "$launch_pid" 2>/dev/null; then
+    /usr/bin/kill -TERM "$launch_pid" 2>/dev/null || true
+  elif [[ -z "$launch_pid" ]]; then
+    exit "$signal_status"
+  fi
+}
+
+run_child_and_wait() {
+  local -n child_command=$1
+  local launch_status
+  "${child_command[@]}" &
+  launch_pid=$!
+  if wait "$launch_pid"; then
+    launch_status=0
+  else
+    launch_status=$?
+  fi
+  launch_pid=''
+
+  if (( signal_status != 0 )); then
+    return "$signal_status"
+  fi
+  return "$launch_status"
+}
+
 main() {
-  local check_only=0 archive payload_root runtime_base
+  local check_only=0 archive payload_root payload_status runtime_base uid gid
+  local launch_status
+  # shellcheck disable=SC2034 # passed by name to run_child_and_wait
+  local -a root_env=() launch_command=()
 
   if [[ ${1:-} == '--check' ]]; then
     check_only=1
@@ -87,33 +189,48 @@ main() {
 
   [[ $# -eq 1 ]] || { usage >&2; exit 2; }
   archive=$1
-
   [[ -f "$archive" ]] || die "archive not found: $archive"
   [[ -r "$archive" ]] || die "archive is not readable: $archive"
-  [[ $(uname -m) == 'x86_64' ]] || die 'this wrapper currently supports x86_64 Cloudpath installers only'
+  [[ $(/usr/bin/uname -m) == 'x86_64' ]] || die 'this wrapper supports x86_64 Cloudpath installers only'
   [[ -e /etc/arch-release ]] || die 'this package is intended for Arch Linux and Arch-based systems'
 
-  need tar
-  need find
-  need sed
-  need grep
-  need file
+  need_command /usr/bin/mktemp
+  need_command /usr/bin/rm
+  need_command /usr/bin/tar
+  need_command /usr/bin/find
+  need_command /usr/bin/file
+  need_command /usr/bin/grep
+  need_command /usr/bin/sed
+  need_command /usr/bin/chmod
 
-  check_archive_paths "$archive"
+  validate_archive "$archive"
 
   umask 077
   runtime_base=${XDG_RUNTIME_DIR:-/tmp}
   if [[ ! -d "$runtime_base" || ! -w "$runtime_base" ]]; then
     runtime_base=/tmp
   fi
-  tmp=$(mktemp -d "$runtime_base/cloudpath-arch.XXXXXXXX")
-  trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
+  tmp=$(/usr/bin/mktemp -d "$runtime_base/cloudpath-arch.XXXXXXXX")
+  trap cleanup EXIT
+  trap 'on_signal INT' INT
+  trap 'on_signal TERM' TERM
+  trap 'on_signal HUP' HUP
 
-  mkdir -p "$tmp/payload" "$tmp/fake-release"
-  tar -xjf "$archive" -C "$tmp/payload" --no-same-owner --no-same-permissions
+  /usr/bin/mkdir -p -- "$tmp/payload" "$tmp/fake-release" "$tmp/fake-bin"
+  if ! /usr/bin/tar -xjf "$archive" -C "$tmp/payload" --no-same-owner --no-same-permissions --no-overwrite-dir; then
+    die 'archive extraction failed; it may be malformed or truncated'
+  fi
 
-  payload_root=$(find_payload_root "$tmp/payload") || die 'archive does not contain the expected Cloudpath-x64 payload'
-  chmod u+x "$payload_root/Cloudpath-x64"
+  if payload_root=$(find_payload_root "$tmp/payload"); then
+    :
+  else
+    payload_status=$?
+    if (( payload_status == 2 )); then
+      die 'archive contains more than one valid Cloudpath payload'
+    fi
+    die 'archive does not contain one valid Cloudpath payload'
+  fi
+  /usr/bin/chmod u+x "$payload_root/Cloudpath-x64"
 
   if (( check_only )); then
     show_check "$payload_root"
@@ -121,22 +238,16 @@ main() {
   fi
 
   [[ -x "$RUNTIME_HELPER" ]] || die "runtime helper missing: $RUNTIME_HELPER"
-  need sudo
-  need systemctl
+  need_command /usr/bin/sudo
+  need_command /usr/bin/systemctl
+  /usr/bin/systemctl -q is-active NetworkManager.service || die 'NetworkManager is not running; start it explicitly before enrollment'
 
-  systemctl -q is-active NetworkManager.service || die 'NetworkManager is not running (enable/start NetworkManager first)'
-
-  # Cloudpath's Linux profile in current deployments is commonly gated to
-  # Ubuntu/Fedora even though the actual configuration uses NetworkManager.
-  # These files exist only inside the temporary mount namespace created by
-  # cloudpath-arch-ns; the host files are never edited.
   cat > "$tmp/fake-release/lsb-release" <<'RELEASE'
 DISTRIB_ID=Ubuntu
 DISTRIB_RELEASE=22.04
 DISTRIB_CODENAME=jammy
 DISTRIB_DESCRIPTION="Ubuntu 22.04 LTS"
 RELEASE
-
   cat > "$tmp/fake-release/os-release" <<'RELEASE'
 NAME="Ubuntu"
 VERSION="22.04 LTS (Jammy Jellyfish)"
@@ -147,33 +258,40 @@ VERSION_ID="22.04"
 VERSION_CODENAME=jammy
 UBUNTU_CODENAME=jammy
 RELEASE
+  /usr/bin/chmod 644 "$tmp/fake-release/lsb-release" "$tmp/fake-release/os-release"
+  /usr/bin/install -m 755 /usr/lib/cloudpath-arch/cloudpath-arch-lsb-release "$tmp/fake-bin/lsb_release"
+
+  uid=$(/usr/bin/id -u)
+  gid=$(/usr/bin/id -g)
+  [[ "$uid" =~ ^[1-9][0-9]*$ ]] || die 'the launcher must be invoked by a non-root desktop user'
+  [[ "$gid" =~ ^[0-9]+$ ]] || die 'could not determine the invoking user group'
+
+  root_env+=("PATH=$TRUSTED_ROOT_PATH")
+  for name in DISPLAY WAYLAND_DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS \
+    XDG_RUNTIME_DIR XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE \
+    XDG_CONFIG_HOME XDG_DATA_HOME XDG_DATA_DIRS LANG LC_ALL LC_CTYPE; do
+    append_if_set root_env "$name"
+  done
 
   printf 'Starting Cloudpath with temporary Ubuntu compatibility metadata.\n'
-  printf 'Your enrollment archive stays in a private temporary directory and is deleted on exit.\n'
+  printf 'The archive is in a private temporary directory and will be deleted after the installer exits.\n'
+  printf 'This mount namespace is not a sandbox: Cloudpath can access your files and the real NetworkManager.\n'
 
-  local launch_status
-  if sudo \
-    env \
-      "HOME=$HOME" \
-      "USER=${USER:-$(id -un)}" \
-      "LOGNAME=${LOGNAME:-${USER:-$(id -un)}}" \
-      "PATH=$PATH" \
-      "DISPLAY=${DISPLAY:-}" \
-      "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}" \
-      "XAUTHORITY=${XAUTHORITY:-}" \
-      "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-}" \
-      "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}" \
-      "$RUNTIME_HELPER" "$(id -u)" "$(id -g)" "$payload_root" "$tmp/fake-release"
-  then
-    return 0
+  # shellcheck disable=SC2034 # passed by name to run_child_and_wait
+  launch_command=(/usr/bin/sudo /usr/bin/env "${root_env[@]}" "$RUNTIME_HELPER" "$uid" "$gid" "$payload_root" "$tmp/fake-release" "$tmp/fake-bin")
+  if run_child_and_wait launch_command; then
+    launch_status=0
   else
     launch_status=$?
-    if (( launch_status == 134 )); then
-      printf 'cloudpath-arch: Cloudpath aborted (exit 134). The vendor executable crashed.\n' >&2
-      printf 'cloudpath-arch: Inspect the crash with: coredumpctl info Cloudpath-x64\n' >&2
-    fi
-    return "$launch_status"
   fi
+
+  if (( launch_status == 134 )); then
+    printf '%s: Cloudpath aborted with exit status 134. The vendor process terminated abnormally; the internal cause is unconfirmed.\n' "$PROGRAM" >&2
+    printf '%s: inspect local diagnostics with: coredumpctl info Cloudpath-x64\n' "$PROGRAM" >&2
+  fi
+  return "$launch_status"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

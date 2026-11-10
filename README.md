@@ -2,63 +2,150 @@
 
 An Arch Linux compatibility wrapper for the Ruckus Cloudpath Wi-Fi installer.
 
-Originally created for **Copernicus SG (Atlas College)** to connect Arch Linux devices to the school's secured Wi-Fi network.
-
-It may also work with other schools and organizations using Debian&Fedora installer.
+Originally created for **Copernicus SG (Atlas College)**. It may also work with
+other organizations that provide a Debian/Fedora Cloudpath installer.
 
 > [!NOTE]
-> This project was made with the help of AI. It is not officially affiliated with Atlas College, Copernicus or Ruckus.
+> This project is not officially affiliated with Atlas College, Copernicus, or Ruckus.
 
 ## Installation
 
-1. Download your own Debian&Fedora installer (`Cloudpath-x64.tar.bz2`) schools website.
+Download your own `Cloudpath-x64.tar.bz2` enrollment archive from the
+organization that issued it. Enrollment archives contain credentials and are
+not interchangeable; do not ask someone else to share theirs.
 
-   https://eu5.cloudpath.net/enroll/Atlas-College/AtlasCollege/process
+Use a local clone so the installer and the deployed files come from the same
+checkout:
 
-3. Run this command:
-> [!NOTE]
-> This will install that in Downloads file.
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Eski132/atlas-arch/main/install.sh) ~/Downloads/Cloudpath-x64.tar.bz2
+git clone https://github.com/Eski132/atlas-arch.git
+cd atlas-arch
+bash ./install.sh
 ```
 
-3. Follow the Debian&Fedora installer instructions.
+The installer installs the required packages and wrapper files. It does **not**
+enable or start NetworkManager automatically. If NetworkManager is the network
+manager you intend to use, start it explicitly when appropriate:
 
-That's it!
+```bash
+systemctl status NetworkManager
+sudo systemctl start NetworkManager
+```
 
-## How It Works
+Run the non-enrolling archive check first:
 
-Debian&Fedora installer doesn't officially support Arch Linux.
+```bash
+cloudpath-arch --check ~/Downloads/Cloudpath-x64.tar.bz2
+```
 
-This wrapper temporarily makes Debian&Fedora installer detect Ubuntu 22.04 without modifying your actual operating system.
+If the check succeeds and NetworkManager is already active, launch enrollment:
 
-It installs the required dependencies and runs your own Debian&Fedora installer.
+```bash
+cloudpath-arch ~/Downloads/Cloudpath-x64.tar.bz2
+```
+
+The installer preserves the vendor exit status. A failed optional enrollment
+does not remove the installed wrapper, and the command prints the next useful
+step.
+
+## How it works
+
+Cloudpath's Linux installer may check for Ubuntu/Fedora metadata even when it
+uses NetworkManager for the actual connection. The wrapper:
+
+1. validates and extracts the user's archive as the invoking user;
+2. creates temporary Ubuntu 22.04 compatibility files and an `lsb_release`
+   shim with mode 0644/0755 as appropriate;
+3. asks `sudo` to start a private **mount** namespace;
+4. masks the relevant release files only in that namespace; and
+5. drops privileges back to the invoking desktop user before starting the
+   proprietary `Cloudpath-x64` executable.
+
+The host's `/etc/lsb-release`, `/etc/os-release`, and `/usr/lib/os-release` are
+not modified. The real NetworkManager, D-Bus, network, and user filesystem stay
+visible to Cloudpath. A mount namespace is not a sandbox: do not run an
+untrusted vendor binary, and do not assume it protects your files.
+
+The child environment uses an explicit allowlist. Set variables remain set,
+intentionally empty variables remain empty, and absent variables remain absent.
+`HOME`, `USER`, `LOGNAME`, `SHELL`, and a trusted `PATH` are derived from the
+invoking account after privilege drop. Sudo bookkeeping, loader variables, and
+shell startup variables are not forwarded.
+
+## Archive safety
+
+Before extraction, the wrapper checks that the bzip2 tar archive can be listed
+and rejects:
+
+- malformed or truncated archives;
+- absolute paths and `..` path components;
+- symbolic links and hard links;
+- device, FIFO, socket, and other special entries; and
+- archives with zero or multiple valid Cloudpath payload directories.
+
+The executable bit is repaired on the extracted `Cloudpath-x64` file when the
+archive omitted it. Extraction is never performed as root. `session.properties`
+and enrollment tokens are not printed by diagnostics.
 
 ## Troubleshooting
 
-If the Cloudpath executable aborts with `std::out_of_range` or
-`basic_string::substr`, the cause inside the proprietary executable remains
-unconfirmed. The Arch wrapper now reports exit status 134 without masking it
-with a Bash cleanup error.
+### `NetworkManager is not running`
 
-To inspect the crash locally:
+The wrapper deliberately does not enable or start a network service. Check
+which network manager owns the machine and start NetworkManager explicitly only
+if that is what you intend to use.
+
+### `archive does not contain one valid Cloudpath payload`
+
+Use the original archive downloaded from the issuing organization. Do not
+extract it manually as root. `cloudpath-arch --check` reports safe metadata
+without printing token values.
+
+### `Cloudpath aborted with exit status 134`
+
+The wrapper preserves the vendor process status and reports that it terminated
+abnormally. This does **not** prove the internal vendor crash's cause. An
+empty environment is only a hypothesis, not a confirmed explanation.
+
+For local investigation, use a redacted diagnostic such as:
 
 ```bash
 coredumpctl info Cloudpath-x64
 ```
 
-Enrollment archives contain confidential tokens. Do not publish
-`session.properties`, full core dumps, or unredacted enrollment logs.
+Do not share full enrollment archives, `session.properties`, tokens, complete
+core dumps, or unredacted traces. Core dumps and traces may contain credentials.
+The project does not promise secure erasure of temporary data after deletion.
+
+### `must run as root through sudo` or namespace errors
+
+The installed namespace helper is called by the wrapper through `sudo`; do not
+add a passwordless sudo rule for it. Confirm that `util-linux`, `sudo`, and the
+Arch `lsb-release` package are installed. The wrapper must be launched by a
+normal desktop user, never by root.
 
 ## Requirements
 
-- Arch Linux (x86_64)
-- NetworkManager
-- Temporary internet connection
-- Your own Debian&Fedora installer (`Cloudpath-x64.tar.bz2`)
+- Arch Linux or an Arch-based system (x86_64)
+- Bash, bzip2, coreutils, file, findutils, grep, sed, tar, util-linux, and sudo
+- NetworkManager installed and explicitly started for enrollment
+- The user's own `Cloudpath-x64.tar.bz2` archive
+- A desktop session if the vendor installer needs GUI authentication
 
-## Disclaimer
+## Packaging
 
-This project is experimental and has not undergone a security audit. Successful Wi-Fi enrollment is not guaranteed.
+Build the package from the repository clone with an Arch packaging tool:
 
-Created with AI assistance.
+```bash
+makepkg -sf
+```
+
+The PKGBUILD installs the same four runtime files used by the local installer
+and includes the MIT license. Its checksums are generated from the checked-out
+final files.
+
+## Limitations
+
+This wrapper has not been security-audited. It does not sandbox Cloudpath, does
+not guarantee successful enrollment, and cannot diagnose proprietary vendor
+internals without vendor symbols or a reproducible vendor-side failure.
