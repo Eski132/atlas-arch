@@ -217,25 +217,18 @@ LSB_RELEASE
   printf 'Starting Cloudpath with temporary Ubuntu compatibility metadata.\n'
   printf 'Your enrollment archive stays in a private temporary directory and is deleted on exit.\n'
 
+  # Keep unset desktop settings unset; manufacturing empty values can break
+  # desktop helpers and locale defaults. Forward only this explicit allowlist.
+  local variable
+  local -a session_env=()
+  for variable in HOME USER LOGNAME PATH DISPLAY WAYLAND_DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE XDG_CONFIG_HOME XDG_DATA_HOME XDG_DATA_DIRS LANG LC_ALL LC_CTYPE SHELL; do
+    if [[ -v $variable ]]; then
+      session_env+=("$variable=${!variable}")
+    fi
+  done
+
   local launch_status
-  if sudo \
-    env \
-      "HOME=$HOME" \
-      "USER=${USER:-$(id -un)}" \
-      "LOGNAME=${LOGNAME:-${USER:-$(id -un)}}" \
-      "PATH=$PATH" \
-      "DISPLAY=${DISPLAY:-}" \
-      "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}" \
-      "XAUTHORITY=${XAUTHORITY:-}" \
-      "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-}" \
-      "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}" \
-      "XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-}" \
-      "XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-}" \
-      "XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-}" \
-      "XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-}" \
-      "XDG_DATA_HOME=${XDG_DATA_HOME:-}" \
-      "XDG_DATA_DIRS=${XDG_DATA_DIRS:-}" \
-      "LANG=${LANG:-}" "LC_ALL=${LC_ALL:-}" "LC_CTYPE=${LC_CTYPE:-}" "SHELL=${SHELL:-}" \
+  if sudo env "${session_env[@]}" \
       "$RUNTIME_HELPER" "$(id -u)" "$(id -g)" "$payload_root" "$tmp/fake-release" "$tmp/fake-bin"
   then
     return 0
@@ -281,14 +274,16 @@ if [[ -e /etc/os-release && ! -L /etc/os-release ]]; then
   mount -o remount,bind,ro /etc/os-release
 fi
 cd "$payload_root"
-exec setpriv --reuid="$uid" --regid="$gid" --init-groups --reset-env env \
-  "HOME=${HOME:-/tmp}" "USER=${USER:-}" "LOGNAME=${LOGNAME:-}" "PATH=$fake_bin:${PATH:-/usr/local/sbin:/usr/local/bin:/usr/bin}" \
-  "DISPLAY=${DISPLAY:-}" "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}" "XAUTHORITY=${XAUTHORITY:-}" \
-  "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-}" "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}" \
-  "XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-}" "XDG_SESSION_DESKTOP=${XDG_SESSION_DESKTOP:-}" \
-  "XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-}" "XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-}" \
-  "XDG_DATA_HOME=${XDG_DATA_HOME:-}" "XDG_DATA_DIRS=${XDG_DATA_DIRS:-}" \
-  "LANG=${LANG:-}" "LC_ALL=${LC_ALL:-}" "LC_CTYPE=${LC_CTYPE:-}" "SHELL=${SHELL:-}" ./Cloudpath-x64
+# Keep unset desktop settings unset; manufacturing empty values can break
+# desktop helpers and locale defaults. Forward only this explicit allowlist.
+session_env=()
+for variable in HOME USER LOGNAME PATH DISPLAY WAYLAND_DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE XDG_CONFIG_HOME XDG_DATA_HOME XDG_DATA_DIRS LANG LC_ALL LC_CTYPE SHELL; do
+  if [[ -v $variable ]]; then
+    session_env+=("$variable=${!variable}")
+  fi
+done
+exec setpriv --reuid="$uid" --regid="$gid" --init-groups --reset-env \
+  env "${session_env[@]}" "PATH=$fake_bin:${PATH:-/usr/local/sbin:/usr/local/bin:/usr/bin}" ./Cloudpath-x64
 SCRIPT
 
 printf 'Installing dependencies...\n'
@@ -304,3 +299,4 @@ if [[ $# -gt 0 ]]; then
   cloudpath-arch "$@"
 fi
 printf 'Run: cloudpath-arch ~/Downloads/Cloudpath-x64.tar.bz2\n'
+

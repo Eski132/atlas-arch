@@ -36,6 +36,15 @@ It installs the required dependencies and runs your own Debian&Fedora installer.
 
 ## Troubleshooting
 
+If Cloudpath opens but displays `The session has been cancelled`, the GUI
+message alone does not identify the cause. Reinstall the current wrapper and
+retry with a freshly downloaded enrollment archive from the school portal.
+The wrapper cannot renew or repair a cancelled server-side enrollment session.
+
+Both installation methods now use the same launcher code, including Ubuntu
+command detection and desktop-session forwarding. Unset desktop and locale
+variables remain unset instead of being replaced with empty strings.
+
 If the Cloudpath executable aborts with `std::out_of_range` or
 `basic_string::substr`, the cause inside the proprietary executable remains
 unconfirmed. The Arch wrapper now reports exit status 134 without masking it
@@ -57,8 +66,22 @@ Enrollment archives contain confidential tokens. Do not publish
 - Temporary internet connection
 - Your own Debian&Fedora installer (`Cloudpath-x64.tar.bz2`)
 
+## Development checks
+
+After editing a launcher, regenerate the standalone installer and package
+checksums, then run the tests:
+
+```bash
+python3 tools/sync-installer.py
+python3 -m unittest discover -s tests -v
+```
+
+Tests use a mock vendor executable and mock mount/privilege commands. They do
+not validate real Cloudpath enrollment or modify the host network.
+
 ## Disclaimer
 
 This project is experimental and has not undergone a security audit. Successful Wi-Fi enrollment is not guaranteed.
 
 Created with AI assistance.
+

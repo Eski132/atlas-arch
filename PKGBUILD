@@ -1,6 +1,6 @@
 pkgname=cloudpath-arch-wrapper
 pkgver=0.1.0
-pkgrel=2
+pkgrel=3
 pkgdesc='Run user-provided Cloudpath XpressConnect Linux installers on Arch Linux'
 arch=('x86_64')
 url='https://github.com/Eski132/atlas-arch'
@@ -27,9 +27,9 @@ source=(
   'cloudpath-arch-mount-run'
 )
 sha256sums=(
-  '8f8b8b878dafc5eb5b4a8c4dbad9c474c22b1d6057d87017902a8da45a01bbd0'
-  '08aca6f4002b05ce70d248a45d960832acd0c4ab1006b9a7ff553a22243aa508'
-  '466c9ac9837e5fcf423bcd2395e991750f462dbb7bdd4a3b11ca062dd5877bf5'
+  'ed718ea988d30aa9ddd4cb3537f2d61adb75ca1235c5324574e86b3180228e51'
+  'f14f990eaa06e8fbd7dfe4ad2a9b65bd5531e7dd99eba3dbe8f5e4dda5b7604b'
+  '976d9e21bf0f3b69357abff8d90839164fad8e8c033bc536f401c816ec6a7cf6'
 )
 
 package() {
@@ -37,3 +37,4 @@ package() {
   install -Dm755 "$srcdir/cloudpath-arch-ns" "$pkgdir/usr/lib/cloudpath-arch/cloudpath-arch-ns"
   install -Dm755 "$srcdir/cloudpath-arch-mount-run" "$pkgdir/usr/lib/cloudpath-arch/cloudpath-arch-mount-run"
 }
+

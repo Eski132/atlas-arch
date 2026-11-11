@@ -109,7 +109,7 @@ main() {
   tmp=$(mktemp -d "$runtime_base/cloudpath-arch.XXXXXXXX")
   trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 
-  mkdir -p "$tmp/payload" "$tmp/fake-release"
+  mkdir -p "$tmp/payload" "$tmp/fake-release" "$tmp/fake-bin"
   tar -xjf "$archive" -C "$tmp/payload" --no-same-owner --no-same-permissions
 
   payload_root=$(find_payload_root "$tmp/payload") || die 'archive does not contain the expected Cloudpath-x64 payload'
@@ -148,22 +148,72 @@ VERSION_CODENAME=jammy
 UBUNTU_CODENAME=jammy
 RELEASE
 
+  # Cloudpath may invoke lsb_release instead of reading the release files.
+  # Place a deterministic Ubuntu shim first in the child-only PATH.
+  cat > "$tmp/fake-bin/lsb_release" <<'LSB_RELEASE'
+#!/usr/bin/env bash
+set -eu
+
+silent=0
+fields=()
+for arg in "$@"; do
+  case "$arg" in
+    -s|--short) silent=1 ;;
+    -a|--all) fields=(i d r c) ;;
+    -i|--id) fields+=(i) ;;
+    -d|--description) fields+=(d) ;;
+    -r|--release) fields+=(r) ;;
+    -c|--codename) fields+=(c) ;;
+    -[sidrc]*)
+      flags=${arg#-}
+      while [[ -n "$flags" ]]; do
+        flag=${flags:0:1}
+        flags=${flags:1}
+        case "$flag" in
+          s) silent=1 ;;
+          i|d|r|c) fields+=("$flag") ;;
+        esac
+      done
+      ;;
+  esac
+done
+
+if (( ${#fields[@]} == 0 )); then
+  fields=(i d r c)
+fi
+
+for field in "${fields[@]}"; do
+  case "$field" in
+    i) label="Distributor ID:"; value="Ubuntu" ;;
+    d) label="Description:"; value="Ubuntu 22.04 LTS" ;;
+    r) label="Release:"; value="22.04" ;;
+    c) label="Codename:"; value="jammy" ;;
+  esac
+  if (( silent )); then
+    printf "%s\n" "$value"
+  else
+    printf "%s\t%s\n" "$label" "$value"
+  fi
+done
+LSB_RELEASE
+  chmod 755 "$tmp/fake-bin/lsb_release"
+
   printf 'Starting Cloudpath with temporary Ubuntu compatibility metadata.\n'
   printf 'Your enrollment archive stays in a private temporary directory and is deleted on exit.\n'
 
+  # Keep unset desktop settings unset; manufacturing empty values can break
+  # desktop helpers and locale defaults. Forward only this explicit allowlist.
+  local variable
+  local -a session_env=()
+  for variable in HOME USER LOGNAME PATH DISPLAY WAYLAND_DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE XDG_CONFIG_HOME XDG_DATA_HOME XDG_DATA_DIRS LANG LC_ALL LC_CTYPE SHELL; do
+    if [[ -v $variable ]]; then
+      session_env+=("$variable=${!variable}")
+    fi
+  done
+
   local launch_status
-  if sudo \
-    env \
-      "HOME=$HOME" \
-      "USER=${USER:-$(id -un)}" \
-      "LOGNAME=${LOGNAME:-${USER:-$(id -un)}}" \
-      "PATH=$PATH" \
-      "DISPLAY=${DISPLAY:-}" \
-      "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}" \
-      "XAUTHORITY=${XAUTHORITY:-}" \
-      "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-}" \
-      "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-}" \
-      "$RUNTIME_HELPER" "$(id -u)" "$(id -g)" "$payload_root" "$tmp/fake-release"
+  if sudo env "${session_env[@]}" \
+      "$RUNTIME_HELPER" "$(id -u)" "$(id -g)" "$payload_root" "$tmp/fake-release" "$tmp/fake-bin"
   then
     return 0
   else
